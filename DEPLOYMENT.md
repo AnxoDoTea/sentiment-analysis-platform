@@ -1,82 +1,57 @@
 # Deployment & Infrastructure
 
 ## Overview
-We follow a strict **GitOps** capability using **FluxCD**. This means all infrastructure changes are committed to code (IaC) and automatically reconciled by the cluster.
+We use a **GitOps** approach using **Kustomize** for configuration management. The infrastructure is defined in the `sentiment-analysis-gitops` repository.
 
-## Deployment Strategy
+## GitOps Structure (`sentiment-analysis-gitops`)
 
-### 1. Environment Propagation
-We define three core environments mapped to Kubernetes Namespaces:
-- **`dev`**: Feature branches and rapid iteration.
-- **`staging`**: Pre-production testing, identical config to prod.
-- **`prod`**: User-facing stable environment.
-
-### 2. GitOps Structure
-We use the logic in our `sentiment-analysis-gitops` repository:
+We use a standard Kustomize **Base + Overlay** pattern:
 
 ```text
 /
-├── apps/               # Application HelmRelease and Kustomizations
-│   ├── base/           # Common config
-│   ├── overlays/       # Env-specific patches
-│   │   ├── dev/
-│   │   ├── staging/
-│   │   └── prod/
+├── manifests/
+│   ├── base/               # Common definitions for all environments
+│   │   ├── backend/
+│   │   ├── frontend/
+│   │   ├── kafka/          # Strimzi Kafka Cluster
+│   │   ├── spark/          # Spark Service Accounts
+│   │   ├── qdrant/
+│   │   ├── sealed-secrets/
+│   │   └── kustomization.yaml
+│   │
+│   └── overlays/           # Environment-specific patches
+│       ├── dev/
+│       ├── stg/
+│       ├── uat/
+│       ├── pro/
 │
-├── infrastructure/     # Infrastructure components (Kafka, databases)
-│   ├── base/
-│   └── controllers/    # Ingress Nginx, Cert-Manager, etc.
-│
-└── clusters/           # FluxCD Entrypoints
-    ├── dev/
-    └── prod/
+└── README.md
 ```
 
-## Prerequisites
+## Prerequisities
+- **WSL 2** (Windows Subsystem for Linux)
+- **Docker Desktop** (configured with WSL 2 backend)
+- **Kind** or **Minikube**
+- **Kubectl**
+- **Kustomize**
 
-### Tools
-- **Docker**: For container runtime.
-- **Kind** (Kubernetes in Docker) or **Minikube**: For local development.
-- **Flux CLI**: For bootstrapping.
-- **Terraform** (Optional): If deploying to AWS/GCP (files located in `/terraform`).
+## Deployment Commands
 
-### Local Development Setup (Quickstart)
+To deploy an environment (e.g., `dev`):
 
-1.  **Start Cluster**
-    ```bash
-    kind create cluster --name sentiment-platform --config kind-config.yaml
-    ```
-
-2.  **Bootstrap Flux**
-    ```bash
-    flux bootstrap github \
-      --owner=<your-github-user> \
-      --repository=sentiment-analysis-gitops \
-      --branch=main \
-      --path=./clusters/dev \
-      --personal
-    ```
-
-3.  **Port Forwarding**
-    Access services locally:
-    ```bash
-    kubectl port-forward svc/frontend 8080:80 -n dev
-    kubectl port-forward svc/grafana 3000:3000 -n monitoring
-    ```
-
-## Terraform (Cloud Provisioning)
-*Note: For this project phase, we focus on local/VM based K8s, but the structure allows for cloud adoption.*
-
-```hcl
-# Example structure in /terraform/main.tf
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
-  cluster_name = "sentiment-prod"
-  # ...
-}
+```bash
+# From the root of the gitops repo
+kustomize build manifests/overlays/dev | kubectl apply -f -
 ```
 
-## Scaling Policies
-- **HPA (Horizontal Pod Autoscaler)**: Enabled on backend and consumer services based on CPU/Memory usage.
-- **KEDA (Kubernetes Event-driven Autoscaling)**: (Future) Scale Spark workers based on Kafka lag.
+## Secrets Management
+We use **Sealed Secrets** to encrypt sensitive data (API keys, DB passwords) in the git repo.
+- **Controller**: Deployed via `manifests/base/sealed-secrets`.
+- **Usage**:
+  1. Create a secret locally: `kubectl create secret generic my-secret --dry-run=client --from-literal=foo=bar -o json > secret.json`
+  2. Seal it: `kubeseal < secret.json > sealed-secret.yaml`
+  3. Commit `sealed-secret.yaml` to the repo.
+
+## Scaling
+- **Horizontal Pod Autoscaler (HPA)**: Can be added as a patch in `overlays/pro`.
+- **Replicas**: Managed via patches in `overlays/<env>/patches/replicas-patch.yaml` (Removed if unnecessary).
